@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Скачивает XML-фид GdeRabota и собирает компактный site/vacancies.json для мини-приложения."""
-import html, json, os, re, sys, urllib.request
+import collections, html, json, os, re, sys, urllib.request
 import xml.etree.ElementTree as ET
 
 FEED_URL = os.environ.get("FEED_URL", "https://gderabota.ru/storage/feed_our_and_promoted.xml")
@@ -33,6 +33,36 @@ def parse_salary(s):
     if s.startswith("от") or len(nums) == 1:
         return nums[0], None
     return nums[0], nums[1]
+
+
+STOP_HEADS = ("работа", "вахт", "контракт", "срочно", "требу", "вакансия", "подработ")
+
+
+def title_head(title):
+    """«Грузчик на склад / вахта» -> «грузчик»"""
+    head = re.split(r"[/(,:;–—!|]| - | в | на | для | с ", title.lower().replace("ё", "е"))[0].strip(" .-")
+    if not (3 <= len(head) <= 40) or re.search(r"\d", head) or len(head.split()) > 4:
+        return None
+    if any(w in head for w in STOP_HEADS):
+        return None
+    return head
+
+
+def build_profs(root):
+    """Список подсказок для поля «Профессия»: специализации + частые названия вакансий."""
+    specs, heads = collections.Counter(), collections.Counter()
+    for v in root.iter("vacancy"):
+        specs.update({text(c, "specialization") for c in v.iter("category")} - {""})
+        h = title_head(text(v, "job-name"))
+        if h:
+            heads[h] += 1
+    out = {}
+    for name, n in specs.items():
+        out[name.lower().replace("ё", "е")] = [name, n]
+    for h, n in heads.items():
+        if n >= 3 and h not in out:
+            out[h] = [h[0].upper() + h[1:], n]
+    return sorted(out.values(), key=lambda x: -x[1])[:600]
 
 
 def main():
@@ -83,7 +113,7 @@ def main():
         with open(os.path.join(DESC_DIR, f"{n // CHUNK}.json"), "w", encoding="utf-8") as f:
             json.dump(descs[n:n + CHUNK], f, ensure_ascii=False, separators=(",", ":"))
     with open(OUT, "w", encoding="utf-8") as f:
-        json.dump({"updated": root.get("creation-time", ""), "chunk": CHUNK, "items": items}, f,
+        json.dump({"updated": root.get("creation-time", ""), "chunk": CHUNK, "profs": build_profs(root), "items": items}, f,
                   ensure_ascii=False, separators=(",", ":"))
     print(f"OK: {len(items)} вакансий -> {OUT}")
 

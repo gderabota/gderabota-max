@@ -44,6 +44,8 @@
   .sugg div:first-child { border-top: 0; }
   .sugg div span { color: var(--muted); font-size: 13px; white-space: nowrap; }
   .sugg div:active { background: var(--chip); }
+  .cityLink { display: block; margin-top: 12px; padding: 14px; border-radius: 12px; text-align: center;
+              font-weight: 600; text-decoration: none; background: var(--accent); color: var(--accent-text); }
   .desc:empty { display: none; }
   .desc { font-size: 13px; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 3;
           -webkit-box-orient: vertical; overflow: hidden; }
@@ -66,7 +68,10 @@
       </div>
     </label>
     <label>Профессия или должность
-      <input id="prof" placeholder="Например, водитель" enterkeyhint="next">
+      <div class="cityBox">
+        <input id="prof" placeholder="Например, водитель" enterkeyhint="next" autocomplete="off" autocorrect="off" spellcheck="false">
+        <div id="psugg" class="sugg" hidden></div>
+      </div>
     </label>
     <label>Зарплата от, ₽
       <input id="sal" inputmode="numeric" placeholder="Например, 60000" enterkeyhint="search">
@@ -103,7 +108,8 @@
   function norm(s) { return (s || "").toLowerCase().replace(/ё/g, "е").replace(/[^a-zа-я0-9]+/g, " ").trim(); }
   // грубый «стемминг»: отрезаем окончание, чтобы «водителем» нашёл «водитель»
   function stem(w) { return w.length > 5 ? w.slice(0, -2) : w.length > 3 ? w.slice(0, -1) : w; }
-  function words(s) { return norm(s).split(" ").filter(function (w) { return w.length > 1; }).map(stem); }
+  var STOP = { "по": 1, "на": 1, "для": 1, "без": 1, "или": 1 };
+  function words(s) { return norm(s).split(" ").filter(function (w) { return w.length > 1 && !STOP[w]; }).map(stem); }
   function money(n) { return n.toLocaleString("ru-RU"); }
   function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]; }); }
 
@@ -157,10 +163,23 @@
       head = "Ничего не нашлось";
     }
     shown = 0;
-    $("out").innerHTML = '<div class="status">' + esc(head) + '</div>' + (note ? '<div class="note">' + esc(note) + '</div>' : "") + '<div class="list" id="list"></div>';
+    $("out").innerHTML = '<div class="status">' + esc(head) + '</div>' + (note ? '<div class="note">' + esc(note) + '</div>' : "") +
+      '<div class="list" id="list"></div>' + cityLink(c);
     more();
     if (WA && WA.HapticFeedback && WA.HapticFeedback.impactOccurred) { try { WA.HapticFeedback.impactOccurred("light"); } catch (_) {} }
     $("out").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  // ссылка на все вакансии города на gderabota.ru: /вакансии/казань, /вакансии/ростов-на-дону
+  function cityLink(c) {
+    var city = null;
+    for (var i = 0; i < CITIES.length; i++) if (CITIES[i].k === c) { city = CITIES[i].n; break; }
+    var url = "https://gderabota.ru/вакансии", label = "Смотреть другие вакансии";
+    if (city && !/[()]/.test(city)) {
+      url += "/" + city.toLowerCase().trim().replace(/\s+/g, "-");
+      label += " в городе " + city;
+    }
+    return '<a class="cityLink" href="' + esc(url) + '" data-url="' + esc(url) + '">' + esc(label) + '&nbsp;→</a>';
   }
 
   function card(v) {
@@ -188,7 +207,7 @@
 
   // ссылки открываем через MAX (во внешнем браузере), если мост доступен
   document.addEventListener("click", function (e) {
-    var a = e.target.closest && e.target.closest("a.card");
+    var a = e.target.closest && e.target.closest("a[data-url]");
     if (!a) return;
     if (WA && WA.openLink) { e.preventDefault(); try { WA.openLink(a.dataset.url); return; } catch (_) {} }
     a.target = "_blank"; a.rel = "noopener";
@@ -196,32 +215,39 @@
 
   $("f").addEventListener("submit", search);
 
-  // компактные подсказки городов (вместо системного списка, который закрывает клавиатуру)
-  var CITIES = [];
+  // компактные подсказки (вместо системного списка, который закрывает клавиатуру)
+  var CITIES = [], PROFS = [];
   function plural(n) { var a = n % 10, b = n % 100;
     return n + (a === 1 && b !== 11 ? " вакансия" : a >= 2 && a <= 4 && (b < 12 || b > 14) ? " вакансии" : " вакансий"); }
-  function showSugg() {
-    var q = norm($("city").value), box = $("sugg");
-    if (!q) { box.hidden = true; return; }
-    var starts = [], inside = [];
-    for (var i = 0; i < CITIES.length && starts.length < 5; i++) {
-      var c = CITIES[i];
-      if (c.k.indexOf(q) === 0) starts.push(c); else if (inside.length < 5 && c.k.indexOf(q) > 0) inside.push(c);
+  // items: [{n: название, k: norm(название), c: число}], отсортированы по популярности
+  function attachSugg(input, box, getItems, showCount, next) {
+    function show() {
+      var q = norm(input.value), items = getItems();
+      if (!q) { box.hidden = true; return; }
+      var starts = [], words = [], inside = [];
+      for (var i = 0; i < items.length && starts.length < 5; i++) {
+        var it = items[i], pos = it.k.indexOf(q);
+        if (pos === 0) starts.push(it);
+        else if (pos > 0 && it.k.charAt(pos - 1) === " ") { if (words.length < 5) words.push(it); }
+        else if (pos > 0 && inside.length < 5) inside.push(it);
+      }
+      var list = starts.concat(words, inside).slice(0, 5);
+      if (!list.length || (list.length === 1 && list[0].k === q)) { box.hidden = true; return; }
+      box.innerHTML = list.map(function (it) {
+        return '<div data-v="' + esc(it.n) + '">' + esc(it.n) + (showCount ? '<span>' + plural(it.c) + '</span>' : "") + '</div>'; }).join("");
+      box.hidden = false;
     }
-    var list = starts.concat(inside).slice(0, 5);
-    if (!list.length || (list.length === 1 && list[0].k === q)) { box.hidden = true; return; }
-    box.innerHTML = list.map(function (c) {
-      return '<div data-city="' + esc(c.n) + '">' + esc(c.n) + '<span>' + plural(c.c) + '</span></div>'; }).join("");
-    box.hidden = false;
+    input.addEventListener("input", show);
+    input.addEventListener("focus", show);
+    input.addEventListener("blur", function () { setTimeout(function () { box.hidden = true; }, 150); });
+    box.addEventListener("mousedown", function (e) { e.preventDefault(); });
+    box.addEventListener("click", function (e) {
+      var d = e.target.closest("[data-v]"); if (!d) return;
+      input.value = d.dataset.v; box.hidden = true; next.focus();
+    });
   }
-  $("city").addEventListener("input", showSugg);
-  $("city").addEventListener("focus", showSugg);
-  $("city").addEventListener("blur", function () { setTimeout(function () { $("sugg").hidden = true; }, 150); });
-  $("sugg").addEventListener("mousedown", function (e) { e.preventDefault(); });
-  $("sugg").addEventListener("click", function (e) {
-    var d = e.target.closest("[data-city]"); if (!d) return;
-    $("city").value = d.dataset.city; $("sugg").hidden = true; $("prof").focus();
-  });
+  attachSugg($("city"), $("sugg"), function () { return CITIES; }, true, $("prof"));
+  attachSugg($("prof"), $("psugg"), function () { return PROFS; }, false, $("sal"));
 
   try { var q = JSON.parse(localStorage.getItem("q") || "null"); if (q) { $("city").value = q[0]; $("prof").value = q[1]; $("sal").value = q[2]; } } catch (_) {}
 
@@ -232,6 +258,7 @@
     DATA.forEach(function (v) { v.c.forEach(function (x) { cnt[x[0]] = (cnt[x[0]] || 0) + 1; }); });
     CITIES = Object.keys(cnt).map(function (c) { return { n: c, k: norm(c), c: cnt[c] }; })
                     .sort(function (a, b) { return b.c - a.c; });
+    PROFS = (j.profs || []).map(function (p) { return { n: p[0], k: norm(p[0]), c: p[1] }; });
   }).catch(function () {
     $("out").innerHTML = '<div class="empty">Не удалось загрузить вакансии. Попробуйте позже.</div>';
   });
