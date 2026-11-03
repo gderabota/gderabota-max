@@ -243,6 +243,7 @@
     box.addEventListener("mousedown", function (e) { e.preventDefault(); });
     box.addEventListener("click", function (e) {
       var d = e.target.closest("[data-v]"); if (!d) return;
+      e.preventDefault(); // подсказки лежат внутри <label>: без этого фокус возвращается в поле
       input.value = d.dataset.v; box.hidden = true; next.focus();
     });
   }
