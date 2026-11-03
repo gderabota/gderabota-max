@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>GdeRabota — подбор вакансий</title>
+<script src="https://st.max.ru/js/max-web-app.js"></script>
+<style>
+  :root {
+    --bg: #f4f5f7; --card: #ffffff; --text: #16181d; --muted: #6b7280;
+    --line: #e5e7eb; --accent: #2f4fd8; --accent-text: #ffffff; --chip: #eef1fd;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0f1115; --card: #1a1d24; --text: #f2f3f5; --muted: #9aa1ad;
+            --line: #2a2f39; --accent: #6b85ff; --accent-text: #0f1115; --chip: #232a44; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.4 -apple-system, "Segoe UI", Roboto, Arial, sans-serif; }
+  .wrap { max-width: 640px; margin: 0 auto; padding: 16px 16px 40px; }
+  h1 { font-size: 22px; margin: 4px 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 16px; font-size: 14px; }
+  form { background: var(--card); border-radius: 16px; padding: 16px; display: grid; gap: 12px; }
+  label { display: grid; gap: 6px; font-size: 13px; color: var(--muted); }
+  input { width: 100%; font: inherit; color: var(--text); background: var(--bg);
+          border: 1px solid var(--line); border-radius: 12px; padding: 12px; outline: none; }
+  input:focus { border-color: var(--accent); }
+  button { font: inherit; font-weight: 600; border: 0; border-radius: 12px; padding: 14px;
+           background: var(--accent); color: var(--accent-text); cursor: pointer; }
+  .status { margin: 18px 2px 10px; font-weight: 600; }
+  .note { color: var(--muted); font-size: 13px; margin: -4px 2px 12px; }
+  .list { display: grid; gap: 10px; }
+  .card { background: var(--card); border-radius: 16px; padding: 14px 16px; display: grid; gap: 6px;
+          text-decoration: none; color: inherit; border: 1px solid transparent; }
+  .card:active { border-color: var(--accent); }
+  .title { font-weight: 600; font-size: 16px; }
+  .salary { font-weight: 700; }
+  .meta { color: var(--muted); font-size: 13px; }
+  .desc:empty { display: none; }
+  .desc { font-size: 13px; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 3;
+          -webkit-box-orient: vertical; overflow: hidden; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { background: var(--chip); border-radius: 999px; padding: 3px 10px; font-size: 12px; }
+  .empty { background: var(--card); border-radius: 16px; padding: 18px; color: var(--muted); }
+  .more { width: 100%; margin-top: 12px; background: var(--card); color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Подбор работы</h1>
+  <p class="sub">Укажите город, профессию и желаемую зарплату, и мы покажем подходящие вакансии GdeRabota.</p>
+
+  <form id="f" autocomplete="off">
+    <label>Город
+      <input id="city" list="cities" placeholder="Например, Москва" enterkeyhint="next">
+      <datalist id="cities"></datalist>
+    </label>
+    <label>Профессия или должность
+      <input id="prof" placeholder="Например, водитель" enterkeyhint="next">
+    </label>
+    <label>Зарплата от, ₽
+      <input id="sal" inputmode="numeric" placeholder="Например, 60000" enterkeyhint="search">
+    </label>
+    <button type="submit">Найти вакансии</button>
+  </form>
+
+  <div id="out"></div>
+</div>
+
+<script>
+(function () {
+  var WA = window.WebApp || null;
+  try { WA && WA.ready && WA.ready(); } catch (e) {}
+
+  var DATA = [], PAGE = 10, shown = 0, current = [], CHUNK = 300, descCache = {};
+
+  // описания лежат в desc/N.json — грузим только нужные куски
+  function loadDescs(part) {
+    var need = {};
+    part.forEach(function (v) { if (v.d === undefined) need[Math.floor(v.i / CHUNK)] = 1; });
+    Object.keys(need).forEach(function (n) {
+      descCache[n] = descCache[n] || fetch("desc/" + n + ".json").then(function (r) { return r.json(); });
+      descCache[n].then(function (arr) {
+        arr.forEach(function (d, k) { var v = DATA[n * CHUNK + k]; if (v) v.d = d; });
+        document.querySelectorAll(".desc").forEach(function (el) {
+          var v = DATA[el.dataset.i]; if (v && v.d && !el.textContent) el.textContent = v.d;
+        });
+      }).catch(function () {});
+    });
+  }
+  var $ = function (id) { return document.getElementById(id); };
+
+  function norm(s) { return (s || "").toLowerCase().replace(/ё/g, "е").replace(/[^a-zа-я0-9]+/g, " ").trim(); }
+  // грубый «стемминг»: отрезаем окончание, чтобы «водителем» нашёл «водитель»
+  function stem(w) { return w.length > 5 ? w.slice(0, -2) : w.length > 3 ? w.slice(0, -1) : w; }
+  function words(s) { return norm(s).split(" ").filter(function (w) { return w.length > 1; }).map(stem); }
+  function money(n) { return n.toLocaleString("ru-RU"); }
+  function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]; }); }
+
+  function salaryText(v) {
+    if (v.sf && v.st) return money(v.sf) + " – " + money(v.st) + " ₽";
+    if (v.sf) return "от " + money(v.sf) + " ₽";
+    if (v.st) return "до " + money(v.st) + " ₽";
+    return v.s ? v.s.charAt(0).toUpperCase() + v.s.slice(1) : "Зарплата не указана";
+  }
+
+  // 2 — точно этот город, 1 — начало названия или область, 0 — не подходит
+  function cityRank(v, c) {
+    if (!c) return 1;
+    var best = 0;
+    v.c.forEach(function (x) { var a = norm(x[0]), r = norm(x[1]);
+      if (a === c) best = 2; else if (a.indexOf(c) === 0 || r.indexOf(c) !== -1) best = Math.max(best, 1); });
+    return best;
+  }
+  function cityMatch(v, c) { return cityRank(v, c) > 0; }
+  function profScore(v, ws) {
+    if (!ws.length) return 1;
+    var title = norm(v.t), tags = norm(v.tg.join(" ")), score = 0;
+    ws.forEach(function (w) { if (title.indexOf(w) !== -1) score += 2; else if (tags.indexOf(w) !== -1) score += 1; });
+    return score;
+  }
+  function salaryOk(v, s) {
+    if (!s) return true;
+    var top = v.st || v.sf;
+    return top ? top >= s : true; // «договорная» не отбрасываем
+  }
+
+  function search(e) {
+    if (e) e.preventDefault();
+    var c = norm($("city").value), ws = words($("prof").value),
+        s = parseInt(($("sal").value || "").replace(/\D/g, ""), 10) || 0;
+    try { localStorage.setItem("q", JSON.stringify([$("city").value, $("prof").value, $("sal").value])); } catch (_) {}
+
+    var scored = DATA.map(function (v) { return { v: v, p: profScore(v, ws) }; });
+    var exact = scored.filter(function (x) { return x.p > 0 && (x.cr = cityRank(x.v, c)) > 0 && salaryOk(x.v, s); })
+                      .sort(function (a, b) { return (b.cr - a.cr) || (b.p - a.p); }).map(function (x) { return x.v; });
+    var head, note = "";
+    if (exact.length) {
+      head = "Найдено вакансий: " + exact.length; current = exact;
+    } else {
+      // запасные варианты: та же профессия в других городах, затем любые вакансии в этом городе
+      var sameProf = ws.length ? scored.filter(function (x) { return x.p >= 1 && salaryOk(x.v, s); }).sort(function (a, b) { return b.p - a.p; }).map(function (x) { return x.v; }) : [];
+      var sameCity = c ? DATA.filter(function (v) { return cityMatch(v, c); }) : [];
+      if (sameProf.length) { current = sameProf; note = "В выбранном городе точных совпадений нет. Похожие вакансии в других городах:"; }
+      else if (sameCity.length) { current = sameCity; note = "По этой профессии пока ничего нет. Другие вакансии в вашем городе:"; }
+      else { current = DATA.slice(); note = "Точных совпадений нет. Посмотрите свежие вакансии:"; }
+      head = "Ничего не нашлось";
+    }
+    shown = 0;
+    $("out").innerHTML = '<div class="status">' + esc(head) + '</div>' + (note ? '<div class="note">' + esc(note) + '</div>' : "") + '<div class="list" id="list"></div>';
+    more();
+    if (WA && WA.HapticFeedback && WA.HapticFeedback.impactOccurred) { try { WA.HapticFeedback.impactOccurred("light"); } catch (_) {} }
+    $("out").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function card(v) {
+    var city = v.c.map(function (x) { return x[0]; }).filter(function (x, i, a) { return a.indexOf(x) === i; }).join(", ");
+    var chips = [v.e, v.x].filter(Boolean).map(function (t) { return '<span class="chip">' + esc(t) + '</span>'; }).join("");
+    return '<a class="card" href="' + esc(v.url) + '" data-url="' + esc(v.url) + '">' +
+      '<div class="title">' + esc(v.t) + '</div>' +
+      '<div class="salary">' + esc(salaryText(v)) + '</div>' +
+      '<div class="meta">' + esc([v.co, city].filter(Boolean).join(" · ")) + '</div>' +
+      (chips ? '<div class="chips">' + chips + '</div>' : "") +
+      '<div class="desc" data-i="' + v.i + '">' + (v.d ? esc(v.d) : "") + '</div></a>';
+  }
+
+  function more() {
+    var list = $("list"), part = current.slice(shown, shown + PAGE);
+    list.insertAdjacentHTML("beforeend", part.map(card).join(""));
+    shown += part.length;
+    loadDescs(part);
+    var old = document.querySelector(".more"); if (old) old.remove();
+    if (shown < current.length) {
+      list.insertAdjacentHTML("afterend", '<button class="more" type="button">Показать ещё</button>');
+      document.querySelector(".more").onclick = more;
+    }
+  }
+
+  // ссылки открываем через MAX (во внешнем браузере), если мост доступен
+  document.addEventListener("click", function (e) {
+    var a = e.target.closest && e.target.closest("a.card");
+    if (!a) return;
+    if (WA && WA.openLink) { e.preventDefault(); try { WA.openLink(a.dataset.url); return; } catch (_) {} }
+    a.target = "_blank"; a.rel = "noopener";
+  });
+
+  $("f").addEventListener("submit", search);
+
+  try { var q = JSON.parse(localStorage.getItem("q") || "null"); if (q) { $("city").value = q[0]; $("prof").value = q[1]; $("sal").value = q[2]; } } catch (_) {}
+
+  fetch("vacancies.json?t=" + Date.now()).then(function (r) { return r.json(); }).then(function (j) {
+    DATA = j.items || []; CHUNK = j.chunk || 300;
+    DATA.forEach(function (v, i) { v.i = i; });
+    var cities = {};
+    DATA.forEach(function (v) { v.c.forEach(function (x) { cities[x[0]] = 1; }); });
+    $("cities").innerHTML = Object.keys(cities).sort().map(function (c) { return '<option value="' + esc(c) + '">'; }).join("");
+  }).catch(function () {
+    $("out").innerHTML = '<div class="empty">Не удалось загрузить вакансии. Попробуйте позже.</div>';
+  });
+})();
+</script>
+</body>
+</html>
