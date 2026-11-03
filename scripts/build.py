@@ -3,11 +3,20 @@
 import collections, html, json, os, re, sys, urllib.request
 import xml.etree.ElementTree as ET
 
-FEED_URL = os.environ.get("FEED_URL", "https://gderabota.ru/storage/feed_our_and_promoted.xml")
+# Фиды GdeRabota. Вакансии из всех фидов объединяются, дубли по ссылке убираются.
+FEED_URLS = os.environ.get("FEED_URLS", " ".join([
+    "https://gderabota.ru/storage/feed_our_and_promoted.xml",
+    "https://gderabota.ru/storage/feed_our_exclude_trudvsem.xml",
+])).split()
 SITE = os.path.join(os.path.dirname(__file__), "..", "site")
 OUT = os.path.join(SITE, "vacancies.json")
 DESC_DIR = os.path.join(SITE, "desc")
 CHUNK = 300  # описаний в одном файле desc/N.json
+
+# Защита от «пустого» фида: адрес уже опубликованного vacancies.json и допустимое падение.
+PREV_URL = os.environ.get("PREV_URL", "")            # например https://gderabota.github.io/gderabota-max/vacancies.json
+MIN_RATIO = float(os.environ.get("MIN_RATIO", "0.5"))  # меньше половины от прошлого раза — не публикуем
+FORCE = os.environ.get("FORCE", "") == "1"            # ручной запуск с force: опубликовать всё равно
 
 
 def text(el, path):
@@ -52,7 +61,7 @@ def build_profs(root):
     """Список подсказок для поля «Профессия»: специализации + частые названия вакансий."""
     specs, heads = collections.Counter(), collections.Counter()
     for v in root.iter("vacancy"):
-        specs.update({text(c, "specialization") for c in v.iter("category")} - {""})
+        specs.update({text(c, "specialization") for c in v.iter("category")} - {"", "Другое"})
         h = title_head(text(v, "job-name"))
         if h:
             heads[h] += 1
@@ -65,14 +74,58 @@ def build_profs(root):
     return sorted(out.values(), key=lambda x: -x[1])[:600]
 
 
-def main():
-    src = sys.argv[1] if len(sys.argv) > 1 else None
-    if src:
-        data = open(src, "rb").read()
+def load_feed(src):
+    if src.startswith("http"):
+        req = urllib.request.Request(src, headers={"User-Agent": "gderabota-max-miniapp/1.0"})
+        data = urllib.request.urlopen(req, timeout=300).read()
     else:
-        req = urllib.request.Request(FEED_URL, headers={"User-Agent": "gderabota-max-miniapp/1.0"})
-        data = urllib.request.urlopen(req, timeout=120).read()
-    root = ET.fromstring(data)
+        data = open(src, "rb").read()
+    return ET.fromstring(data)
+
+
+def previous_count():
+    """Сколько вакансий опубликовано сейчас (None — неизвестно, например первая публикация)."""
+    if not PREV_URL:
+        return None
+    try:
+        req = urllib.request.Request(PREV_URL, headers={"User-Agent": "gderabota-max-miniapp/1.0"})
+        return len(json.load(urllib.request.urlopen(req, timeout=60))["items"])
+    except Exception as e:
+        print(f"Не удалось узнать прошлое число вакансий ({e}), проверку пропускаю")
+        return None
+
+
+def check_drop(new_count):
+    prev = previous_count()
+    if prev is None:
+        return
+    print(f"Было опубликовано: {prev}, сейчас: {new_count}")
+    if new_count < prev * MIN_RATIO and not FORCE:
+        sys.exit(f"СТОП: вакансий стало {new_count} вместо {prev} (меньше {int(MIN_RATIO * 100)}%). "
+                 "Похоже, фид пришёл неполным. Публикация отменена, на сайте остаются прежние вакансии. "
+                 "Если сокращение настоящее, запустите сборку вручную с параметром force.")
+
+
+def main():
+    # можно передать локальные файлы: python3 scripts/build.py feed1.xml feed2.xml
+    sources = sys.argv[1:] or FEED_URLS
+    roots = []
+    for src in sources:
+        r = load_feed(src)
+        n = sum(1 for _ in r.iter("vacancy"))
+        print(f"{src}: {n} вакансий")
+        if n == 0 and not FORCE:
+            sys.exit(f"СТОП: фид {src} пустой. Публикация отменена, на сайте остаются прежние вакансии.")
+        roots.append(r)
+    # объединяем фиды, дубли по ссылке убираем
+    root = ET.Element("source", {"creation-time": max(r.get("creation-time", "") for r in roots)})
+    seen = set()
+    for r in roots:
+        for v in r.iter("vacancy"):
+            u = text(v, "url")
+            if u and u not in seen:
+                seen.add(u)
+                root.append(v)
     items = []
     for v in root.iter("vacancy"):
         url = text(v, "url")
@@ -104,6 +157,7 @@ def main():
             "u": text(v, "update-date")[:10],
         })
     items.sort(key=lambda i: i["u"], reverse=True)
+    check_drop(len(items))
     # описания выносим в отдельные небольшие файлы, чтобы основной список грузился быстро
     descs = [i.pop("d") for i in items]
     os.makedirs(DESC_DIR, exist_ok=True)
