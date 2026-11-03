@@ -6,6 +6,11 @@ on:
   schedule:
     - cron: "17 * * * *"   # каждый час
   workflow_dispatch:
+    inputs:
+      force:
+        description: "Опубликовать, даже если вакансий стало намного меньше"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -24,11 +29,30 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
-      - name: Скачать фид и собрать vacancies.json
+      - id: pages
+        uses: actions/configure-pages@v5
+      - name: Скачать фиды и собрать vacancies.json
+        env:
+          # с чем сравнивать: уже опубликованный список вакансий
+          PREV_URL: ${{ steps.pages.outputs.base_url }}/vacancies.json
+          FORCE: ${{ inputs.force && '1' || '' }}
         run: python3 scripts/build.py
-      - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site
       - id: deployment
         uses: actions/deploy-pages@v4
+
+  # GitHub выключает расписание, если в публичном репозитории 60 дней не было коммитов.
+  # Фиды обновляются, а код нет — поэтому при каждом запуске по расписанию
+  # заново включаем этот workflow, и счётчик 60 дней не доходит до конца.
+  keepalive:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Не дать GitHub отключить расписание
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow enable update.yml --repo "${{ github.repository }}"
