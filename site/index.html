@@ -36,6 +36,14 @@
   .title { font-weight: 600; font-size: 16px; }
   .salary { font-weight: 700; }
   .meta { color: var(--muted); font-size: 13px; }
+  .cityBox { position: relative; }
+  .sugg { margin-top: 6px; background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+          overflow: hidden; }
+  .sugg div { padding: 10px 12px; color: var(--text); font-size: 15px; border-top: 1px solid var(--line);
+              display: flex; justify-content: space-between; align-items: center; gap: 8px; cursor: pointer; }
+  .sugg div:first-child { border-top: 0; }
+  .sugg div span { color: var(--muted); font-size: 13px; white-space: nowrap; }
+  .sugg div:active { background: var(--chip); }
   .desc:empty { display: none; }
   .desc { font-size: 13px; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 3;
           -webkit-box-orient: vertical; overflow: hidden; }
@@ -52,8 +60,10 @@
 
   <form id="f" autocomplete="off">
     <label>Город
-      <input id="city" list="cities" placeholder="Например, Москва" enterkeyhint="next">
-      <datalist id="cities"></datalist>
+      <div class="cityBox">
+        <input id="city" placeholder="Например, Москва" enterkeyhint="next" autocomplete="off" autocorrect="off" spellcheck="false">
+        <div id="sugg" class="sugg" hidden></div>
+      </div>
     </label>
     <label>Профессия или должность
       <input id="prof" placeholder="Например, водитель" enterkeyhint="next">
@@ -186,14 +196,42 @@
 
   $("f").addEventListener("submit", search);
 
+  // компактные подсказки городов (вместо системного списка, который закрывает клавиатуру)
+  var CITIES = [];
+  function plural(n) { var a = n % 10, b = n % 100;
+    return n + (a === 1 && b !== 11 ? " вакансия" : a >= 2 && a <= 4 && (b < 12 || b > 14) ? " вакансии" : " вакансий"); }
+  function showSugg() {
+    var q = norm($("city").value), box = $("sugg");
+    if (!q) { box.hidden = true; return; }
+    var starts = [], inside = [];
+    for (var i = 0; i < CITIES.length && starts.length < 5; i++) {
+      var c = CITIES[i];
+      if (c.k.indexOf(q) === 0) starts.push(c); else if (inside.length < 5 && c.k.indexOf(q) > 0) inside.push(c);
+    }
+    var list = starts.concat(inside).slice(0, 5);
+    if (!list.length || (list.length === 1 && list[0].k === q)) { box.hidden = true; return; }
+    box.innerHTML = list.map(function (c) {
+      return '<div data-city="' + esc(c.n) + '">' + esc(c.n) + '<span>' + plural(c.c) + '</span></div>'; }).join("");
+    box.hidden = false;
+  }
+  $("city").addEventListener("input", showSugg);
+  $("city").addEventListener("focus", showSugg);
+  $("city").addEventListener("blur", function () { setTimeout(function () { $("sugg").hidden = true; }, 150); });
+  $("sugg").addEventListener("mousedown", function (e) { e.preventDefault(); });
+  $("sugg").addEventListener("click", function (e) {
+    var d = e.target.closest("[data-city]"); if (!d) return;
+    $("city").value = d.dataset.city; $("sugg").hidden = true; $("prof").focus();
+  });
+
   try { var q = JSON.parse(localStorage.getItem("q") || "null"); if (q) { $("city").value = q[0]; $("prof").value = q[1]; $("sal").value = q[2]; } } catch (_) {}
 
   fetch("vacancies.json?t=" + Date.now()).then(function (r) { return r.json(); }).then(function (j) {
     DATA = j.items || []; CHUNK = j.chunk || 300;
     DATA.forEach(function (v, i) { v.i = i; });
-    var cities = {};
-    DATA.forEach(function (v) { v.c.forEach(function (x) { cities[x[0]] = 1; }); });
-    $("cities").innerHTML = Object.keys(cities).sort().map(function (c) { return '<option value="' + esc(c) + '">'; }).join("");
+    var cnt = {};
+    DATA.forEach(function (v) { v.c.forEach(function (x) { cnt[x[0]] = (cnt[x[0]] || 0) + 1; }); });
+    CITIES = Object.keys(cnt).map(function (c) { return { n: c, k: norm(c), c: cnt[c] }; })
+                    .sort(function (a, b) { return b.c - a.c; });
   }).catch(function () {
     $("out").innerHTML = '<div class="empty">Не удалось загрузить вакансии. Попробуйте позже.</div>';
   });
